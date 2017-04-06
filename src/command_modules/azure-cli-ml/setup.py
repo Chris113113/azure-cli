@@ -52,5 +52,8 @@ setup(
     packages=[
         'azure.cli.command_modules.ml'
     ],
+    package_data={
+        '': ['data/*.json', 'data/preamble', 'data/sample.*', 'data/example_app.py', 'data/getsample.py', 'service/*', 'service/data/*']
+    },
     install_requires=DEPENDENCIES,
 )
