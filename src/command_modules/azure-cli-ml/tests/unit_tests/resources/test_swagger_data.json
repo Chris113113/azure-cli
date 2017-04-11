@@ -1,0 +1,9 @@
+{
+  "int_array": {"items": {"type": "integer", "format": "int32"}, "type": "array"},
+  "struct_data_array": {"items": {"type": "object", "properties": {"grades": {"items": {"type": "number", "format": "double"}, "type": "array"}, "name": {"type": "string"}}}, "type": "array"},
+  "multi_level_array": {"items": {"type": "object", "properties": {"f0": {"type": "integer", "format": "int32"}, "f1": {"items": {"items": {"items": {"type": "number", "format": "double"}, "type": "array"}, "type": "array"}, "type": "array"}, "f2": {"type": "number", "format": "float"}}}, "type": "array"},
+  "pandas_births": {"items": {"type": "object", "properties": {"Births": {"type": "integer", "format": "int64"}, "Names": {"type": "string"}}}, "type": "array"},
+  "test_dataframe": {"items": {"type": "object", "properties": {"Idx": {"format": "int64", "type": "integer"}, "aString": {"type": "string"}, "aFloat": {"format": "double", "type": "number"}}}, "type": "array"},
+  "spark_contacts_df": {"type": "array", "items": {"type": "object", "properties": {"age": {"type": "integer", "format": "int64"}, "address": {"type": "object", "properties": {"state": {"type": "string"}, "city": {"type": "string"}, "street": {"type": "string"}}}, "phone": {"type": "string"}, "fname": {"type": "string"}, "lname": {"type": "string"}}}},
+  "spark_test_df": {"items": {"properties": {"string": {"type": "string"}, "map": {"additionalProperties": {"format": "float", "type": "number"}, "type": "object"}, "array": {"items": {"properties": {"f2": {"type": "boolean"}, "f3": {"type": "string"}, "f1": {"format": "int64", "type": "integer"}}, "type": "object"}, "type": "array"}}, "type": "object"}, "type": "array"}
+}

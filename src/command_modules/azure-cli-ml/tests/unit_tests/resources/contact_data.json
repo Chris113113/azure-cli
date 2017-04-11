@@ -1,0 +1,3 @@
+{"fname": "John", "lname": "Doe", "age": 35, "address": { "street": "121 151st NE", "city": "Seattle", "state": "WA" }, "phone": "206 100 0000"}
+{"fname": "Michael", "lname": "Brown", "age": 58, "address": { "street": "112 Main Ave", "city": "Redmond", "state": "WA" }, "phone": "425 123 4567"}
+{"fname": "Mary", "lname": "Smith", "age": 45, "address": { "street": "34 Blue St.", "city": "Portland", "state": "OR" }, "phone": "425 111 2222"}
