@@ -348,7 +348,8 @@ def setup_k8s(context, root_name, resource_group, acr_login_server, acr_password
         k8s_ops = KubernetesOperations()
         k8s_ops.add_acr_secret(context.acr_username + 'acrkey', context.acr_username, acr_login_server,
                                acr_password, acr_email)
-        deploy_frontend(k8s_ops, acr_email)
+        deploy_realtime_frontend(k8s_ops, acr_email)
+        deploy_batch_frontend(k8s_ops, context.az_account_key, context.acr_username + 'acrkey')
 
     except InvalidNameError as exc:
         print("Invalid cluster name. {}".format(exc.message))
@@ -365,13 +366,21 @@ def setup_k8s(context, root_name, resource_group, acr_login_server, acr_password
     return True
 
 
-def deploy_frontend(k8s_ops, acr_email):
+def deploy_realtime_frontend(k8s_ops, acr_email):
     k8s_ops.add_acr_secret('amlintfeacrkey', 'azuremlintfe.azurecr.io',
                            'azuremlintfe', 'Zxw+PXQ+KZ1KEEX5172EMc/xN0RTTmyP', acr_email)
     k8s_ops.deploy_deployment(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                            'data', 'azureml-fe-dep.yaml'), 120, 1, 'amlintfeacrkey')
     k8s_ops.expose_frontend(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                          'data', 'azureml-fe-service.yaml'))
+
+
+def deploy_batch_frontend(k8s_ops, storage_conn_string, acr_key):
+
+    k8s_ops.deploy_deployment(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                           'data', 'spark_batch_deployment.yaml'), 120, 1, 'amlintfeacrkey')
+    k8s_ops.expose_frontend(os.path.jons(os.path.dirname(os.path.abspath(__file__)),
+                                         'data', 'spark_batch_service.yaml'))
 
 
 def check_for_kubectl(context):
