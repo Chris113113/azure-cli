@@ -1,0 +1,21 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: sparkdeployment
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: sparkbatch
+    spec:
+      containers:
+        - image: azuremlintfe.azurecr.io/besfe
+          name: sparkbatch
+          env:
+           - name: DEFAULT_STORAGE_CONNECTION_STRING
+             value: null
+           - name: ACR_SECRET
+             value: null
+      imagePullSecrets:
+        - name: amlintfeacrkey
