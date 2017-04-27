@@ -28,6 +28,7 @@ from ._az_util import query_deployment_status
 from ._az_util import az_get_k8s_credentials
 from ._k8s_util import KubernetesOperations
 from ._k8s_util import setup_k8s
+from ._k8s_util import deploy_batch_frontend
 from ..ml import __version__
 
 
@@ -532,3 +533,9 @@ def create_action_with_prompt_if_defined(context, action_str, env_dict, action, 
         else:
             return action(*action_args)
     return action(*action_args)
+
+
+def deploy_batch_fe():
+    context = CommandLineInterfaceContext()
+    deploy_batch_frontend(KubernetesOperations(),
+                         context.az_account_name, context.az_account_key, context.acr_user + 'acrkey')
