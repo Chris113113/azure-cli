@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from builtins import input
 from ._az_util import az_create_kubernetes
 from ._az_util import az_get_k8s_credentials
@@ -362,7 +363,7 @@ def setup_k8s(context, root_name, resource_group, acr_login_server, acr_password
         k8s_ops.add_acr_secret(context.acr_username + 'acrkey', context.acr_username, acr_login_server,
                                acr_password, acr_email)
         deploy_realtime_frontend(k8s_ops, acr_email)
-        deploy_batch_frontend(k8s_ops, context.az_account_key, context.acr_username + 'acrkey')
+        deploy_batch_frontend(k8s_ops, context.az_account_name, context.az_account_key, context.acr_username + 'acrkey')
 
     except InvalidNameError as exc:
         print("Invalid cluster name. {}".format(exc.message))
@@ -388,12 +389,39 @@ def deploy_realtime_frontend(k8s_ops, acr_email):
                                          'data', 'azureml-fe-service.yaml'))
 
 
-def deploy_batch_frontend(k8s_ops, storage_conn_string, acr_key):
+def deploy_batch_frontend(k8s_ops, storage_acct_name, storage_acct_key, acr_key):
 
-    k8s_ops.deploy_deployment(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                           'data', 'spark_batch_deployment.yaml'), 120, 1, 'amlintfeacrkey')
-    k8s_ops.expose_frontend(os.path.jons(os.path.dirname(os.path.abspath(__file__)),
-                                         'data', 'spark_batch_service.yaml'))
+    storage_conn_str = "DefaultEndpointsProtocol=https;AccountName={};AccountKey={}".format(
+                        storage_acct_name, storage_acct_key)
+    batch_tmp_file, batch_tmp_path = tempfile.mkstemp()
+    batch_dep_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'data', 'spark_batch_dep.yaml')
+    batch_service_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      'data', 'spark_batch_service.yaml')
+
+    try:
+        with open(batch_dep_path) as f:
+            batch_fe = yaml.load(f)
+    except OSError as exc:
+        print("Unable to find Spark Batch Deployment file.".format(exc))
+        raise
+    batch_fe['spec']['template']['spec']['containers'][0]['env'][0]['value'] = storage_conn_str
+    batch_fe['spec']['template']['spec']['containers'][0]['env'][1]['value'] = acr_key
+
+    with open(batch_tmp_path, 'w') as f:
+        yaml.dump(batch_fe, f, default_flow_style=False)
+
+    k8s_ops = KubernetesOperations()
+    timeout_seconds = 180
+    try:
+        k8s_ops.deploy_deployment(batch_tmp_path, timeout_seconds, 1, 'amlintfeacrkey')
+        k8s_ops.expose_frontend(batch_service_path)
+    except ApiException as exc:
+        print("An exception occurred while deploying the Batch Front-end. {}".format(exc))
+    finally:
+        os.close(batch_tmp_file)
+        os.remove(batch_tmp_path)
+
 
 
 def check_for_kubectl(context):
