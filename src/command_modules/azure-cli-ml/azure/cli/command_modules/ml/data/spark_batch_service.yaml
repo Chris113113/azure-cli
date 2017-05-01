@@ -4,6 +4,7 @@ metadata:
   name: sparkbatch-service
   labels:
     app: sparkbatch
+    webservicename: sparkbatch
 spec:
   type: LoadBalancer
   ports:
