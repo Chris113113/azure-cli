@@ -10,6 +10,11 @@ batch_cli_util.py - Defines utilities, constants for batch portion of azureml CL
 
 from __future__ import print_function
 
+import json
+import sys
+from time import sleep
+from re import match
+import uuid
 import os
 from collections import OrderedDict
 
@@ -20,6 +25,15 @@ from .._util import TraversalFunction
 from .._util import ValueFunction
 from .._util import get_json
 from .._util import get_success_and_resp_str
+from .._util import ice_connection_timeout
+from pkg_resources import resource_filename
+from pkg_resources import resource_string
+from ._realtimeutilities import upload_dependency
+from ...ml import __version__
+from azure.storage.blob import (BlockBlobService, ContentSettings, BlobPermissions)
+from ._realtimeutilities import try_add_sample_file
+from datetime import datetime, timedelta
+from ._realtimeutilities import test_acs_k8s
 
 # CONSTANTS
 BATCH_URL_BASE_FMT = '{}'
@@ -352,3 +366,276 @@ def validate_and_split_run_param(raw_param):
         return False, None, None
     else:
         return True, raw_param.split(':')[0], ':'.join(raw_param.split(':')[1:])
+
+
+def get_auth(context):
+    """
+    Get correct authorization headers
+    :param context:
+    :return:
+    """
+    return (context.hdi_user, context.hdi_pw)
+
+
+def realtime_service_create(score_file, dependencies, requirements, schema_file, service_name,
+                            verb, custom_ice_url, logging_level, model, num_replicas, context):
+    """Create a new realtime web service."""
+
+    verbose = verb
+    if logging_level == 'none':
+        app_insights_enabled = 'false'
+        logging_level = 'debug'
+    else:
+        app_insights_enabled = 'true'
+
+    storage_exists = False
+    acr_exists = False
+
+    if context.az_account_name is None or context.az_account_key is None:
+        print("")
+        print("Please set up your storage account for AML:")
+        print("  export AML_STORAGE_ACCT_NAME=<yourstorageaccountname>")
+        print("  export AML_STORAGE_ACCT_KEY=<yourstorageaccountkey>")
+        print("")
+    else:
+        storage_exists = True
+
+    acs_exists = test_acs_k8s()
+    if not acs_exists:
+        print('')
+        print('Your Kubernetes cluster is not responding as expected.')
+        print('Please verify it is healthy. If you set it up via `az ml env setup,` '
+              'please contact deployml@microsoft.com to troubleshoot.')
+        print('')
+
+    if context.acr_home is None or context.acr_user is None or context.acr_pw is None:
+        print("")
+        print("Please set up your ACR registry for AML:")
+        print("  export AML_ACR_HOME=<youracrdomain>")
+        print("  export AML_ACR_USER=<youracrusername>")
+        print("  export AML_ACR_PW=<youracrpassword>")
+        print("")
+    else:
+        acr_exists = True
+
+    if not match(r"[a-zA-Z0-9\.-]+", service_name):
+        print("Kubernetes Service names may only contain alphanumeric characters, '.', and '-'")
+        return
+
+    if not storage_exists or not acs_exists or not acr_exists:
+        return
+
+    # modify json payload to update assets and driver location
+    payload = resource_string(__name__, 'data/testrequest.json')
+    json_payload = json.loads(payload.decode('ascii'))
+
+    # update target runtime in payload
+    json_payload['properties']['deploymentPackage']['targetRuntime'] = 'spark-py'
+
+    # Add dependencies
+
+    # If there's a model specified, add it as a dependency
+    if model:
+        dependencies.append(model)
+
+    # Always inject azuremlutilities.py as a dependency from the CLI
+    # It contains helper methods for serializing and deserializing schema
+    utilities_filename = resource_filename(__name__, 'azuremlutilities.py')
+    dependencies.append(utilities_filename)
+
+    # If a schema file was provided, try to find the accompanying sample file
+    # and add as a dependency
+    get_sample_code = ''
+    if schema_file is not '':
+        dependencies.append(schema_file)
+        sample_added, sample_filename = try_add_sample_file(dependencies, schema_file, verbose)
+        if sample_added:
+            get_sample_code = \
+                resource_string(__name__, 'data/getsample.py').decode('ascii').replace('PLACEHOLDER', sample_filename)
+
+    if requirements is not '':
+        if verbose:
+            print('Uploading requirements file: {}'.format(requirements))
+            (status, location, filename) = \
+                upload_dependency(context, requirements, verbose)
+            if status < 0:
+                print('Error resolving requirements file: no such file or directory {}'.format(requirements))
+                return
+            else:
+                json_payload['properties']['deploymentPackage']['pipRequirements'] = location
+
+    dependency_injection_code = '\nimport tarfile\n'
+    dependency_count = 0
+    if dependencies is not None:
+        print('Uploading dependencies.')
+        for dependency in dependencies:
+            (status, location, filename) = \
+                upload_dependency(context, dependency, verbose)
+            if status < 0:
+                print('Error resolving dependency: no such file or directory {}'.format(dependency))
+                return
+            else:
+                dependency_count += 1
+                # Add the new asset to the payload
+                new_asset = {'mimeType': 'application/octet-stream',
+                             'id': str(dependency),
+                             'location': location}
+                json_payload['properties']['assets'].append(new_asset)
+                if verbose:
+                    print("Added dependency {} to assets.".format(dependency))
+
+                # If the asset was a directory, also add code to unzip and layout directory
+                if status == 1:
+                    dependency_injection_code = dependency_injection_code + \
+                                                'amlbdws_dependency_{} = tarfile.open("{}")\n'\
+                                                .format(dependency_count, filename)
+                    dependency_injection_code = dependency_injection_code + \
+                                                'amlbdws_dependency_{}.extractall()\n'.format(dependency_count)
+
+    if verbose:
+        print("Code injected to unzip directories:\n{}".format(dependency_injection_code))
+        print(json.dumps(json_payload))
+
+    # read in code file
+    if os.path.isfile(score_file):
+        with open(score_file, 'r') as scorefile:
+            code = scorefile.read()
+    else:
+        print("Error: No such file {}".format(score_file))
+        return
+
+    # Spark specific operations
+    # read in fixed preamble code
+    preamble = resource_string(__name__, 'data/preamble').decode('ascii')
+
+    # wasb configuration: add the configured storage account in the as a wasb location
+    wasb_config = "spark.sparkContext._jsc.hadoopConfiguration().set('fs.azure.account.key." + \
+                      context.az_account_name + ".blob.core.windows.net','" + context.az_account_key + "')"
+
+    # create blob with preamble code and user function definitions from cell
+    code = "{}\n{}\n{}\n{}\n\n\n{}".format(preamble, wasb_config, dependency_injection_code, code, get_sample_code)
+
+    if verbose:
+        print(code)
+
+    az_container_name = 'amlbdpackages'
+    az_blob_name = str(uuid.uuid4()) + '.py'
+    bbs = BlockBlobService(account_name=context.az_account_name,
+                           account_key=context.az_account_key)
+    bbs.create_container(az_container_name)
+    bbs.create_blob_from_text(az_container_name, az_blob_name, code,
+                              content_settings=ContentSettings(content_type='application/text'))
+    blob_sas = bbs.generate_blob_shared_access_signature(
+        az_container_name,
+        az_blob_name,
+        BlobPermissions.READ,
+        datetime.utcnow() + timedelta(days=30))
+    package_location = 'http://{}.blob.core.windows.net/{}/{}?{}'.format(context.az_account_name,
+                                                                         az_container_name, az_blob_name, blob_sas)
+
+    if verbose:
+        print("Package uploaded to " + package_location)
+
+    for asset in json_payload['properties']['assets']:
+        if asset['id'] == 'driver_package_asset':
+            if verbose:
+                print("Current driver location:", str(asset['location']))
+                print("Replacing with:", package_location)
+            asset['location'] = package_location
+
+    # modify json payload to set ACR credentials
+    if verbose:
+        print("Current ACR creds in payload:")
+        print('location:', json_payload['properties']['registryInfo']['location'])
+        print('user:', json_payload['properties']['registryInfo']['user'])
+        print('password:', json_payload['properties']['registryInfo']['password'])
+
+    json_payload['properties']['registryInfo']['location'] = context.acr_home
+    json_payload['properties']['registryInfo']['user'] = context.acr_user
+    json_payload['properties']['registryInfo']['password'] = context.acr_pw
+
+    if verbose:
+        print("New ACR creds in payload:")
+        print('location:', json_payload['properties']['registryInfo']['location'])
+        print('user:', json_payload['properties']['registryInfo']['user'])
+        print('password:', json_payload['properties']['registryInfo']['password'])
+
+    # call ICE with payload to create docker image
+
+    # Set base ICE URL
+    if custom_ice_url is not '':
+        base_ice_url = custom_ice_url
+        if base_ice_url.endswith('/'):
+            base_ice_url = base_ice_url[:-1]
+    else:
+        base_ice_url = 'https://amlacsagent.azureml-int.net'
+
+    create_url = base_ice_url + '/images/' + service_name
+    get_url = base_ice_url + '/jobs'
+    headers = {'Content-Type': 'application/json', 'User-Agent': 'aml-cli-{}'.format(__version__)}
+
+    image = ''
+    max_retries = 3
+    try_number = 0
+    ice_put_result = {}
+    while try_number < max_retries:
+        try:
+            ice_put_result = requests.put(
+                create_url, headers=headers, data=json.dumps(json_payload), timeout=ice_connection_timeout)
+            break
+        except (requests.ConnectionError, requests.exceptions.ReadTimeout):
+            if try_number < max_retries:
+                try_number += 1
+                continue
+            print('Error: could not connect to Azure ML. Please try again later. If the problem persists, please contact deployml@microsoft.com') #pylint: disable=line-too-long
+            return
+
+    if ice_put_result.status_code == 401:
+        print("Invalid API key. Please update your key by running 'az ml env key -u'.")
+        return
+    elif ice_put_result.status_code != 201:
+        print('Error connecting to Azure ML. Please contact deployml@microsoft.com with the stack below.')
+        print(ice_put_result.content)
+        return
+
+    if verbose:
+        print(ice_put_result)
+    if isinstance(ice_put_result.json(), str):
+        return json.dumps(ice_put_result.json())
+
+    job_id = ice_put_result.json()['Job Id']
+    if verbose:
+        print('ICE URL: ' + create_url)
+        print('Submitted job with id: ' + json.dumps(job_id))
+    else:
+        sys.stdout.write('Creating docker image.')
+        sys.stdout.flush()
+
+    job_status = requests.get(get_url + '/' + job_id, headers=headers)
+    response_payload = job_status.json()
+    while 'Provisioning State' in response_payload:
+        job_status = requests.get(get_url + '/' + job_id, headers=headers)
+        response_payload = job_status.json()
+        if response_payload['Provisioning State'] == 'Running':
+            sleep(5)
+            if verbose:
+                print("Provisioning image. Details: " + response_payload['Details'])
+            else:
+                sys.stdout.write('.')
+                sys.stdout.flush()
+            continue
+        else:
+            if response_payload['Provisioning State'] == 'Succeeded':
+                acs_payload = response_payload['ACS_PayLoad']
+                acs_payload['container']['docker']['image'] = json_payload['properties']['registryInfo']['location'] \
+                                                              + '/' + service_name
+                image = acs_payload['container']['docker']['image']
+                break
+            else:
+                print('Error creating image: ' + json.dumps(response_payload))
+                return
+
+    print('done.')
+    print('Image available at : {}'.format(acs_payload['container']['docker']['image']))
+    return acs_payload['container']['docker']['image']
+

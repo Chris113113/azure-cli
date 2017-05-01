@@ -24,6 +24,7 @@ from ._batchutilities import batch_list_service_header_to_fn_dict
 from ._batchutilities import batch_view_service_header_to_fn_dict
 from ._batchutilities import batch_view_service_usage_header_to_fn_dict
 from ._batchutilities import get_success_and_resp_str
+from ._batchutilities import get_auth
 from ._batchutilities import validate_and_split_run_param
 from .._util import MultiTableResponse
 from .._util import StaticStringResponse
@@ -44,7 +45,7 @@ def batch_service_list(context=cli_context):
         return
     url = batch_get_url(context, BATCH_ALL_WS_FMT)
     try:
-        resp = context.http_call('get', url, auth=(context.hdi_user, context.hdi_pw))
+        resp = context.http_call('get', url, auth=get_auth(context))
         print(get_success_and_resp_str(context, resp, response_obj=TableResponse(
             batch_list_service_header_to_fn_dict))[1])
     except requests.ConnectionError:
@@ -66,7 +67,7 @@ def batch_service_view(service_name, verb, context=cli_context):
 
     url = batch_get_url(context, BATCH_SINGLE_WS_FMT, service_name)
     try:
-        resp = context.http_call('get', url, auth=(context.hdi_user, context.hdi_pw))
+        resp = context.http_call('get', url, auth=get_auth(context))
 
         success, response = get_success_and_resp_str(context, resp,
                                                      response_obj=MultiTableResponse(
@@ -125,12 +126,11 @@ def batch_list_jobs(service_name, context=cli_context):
 
     url = batch_get_url(context, BATCH_ALL_JOBS_FMT, service_name)
     try:
-        resp = context.http_call('get', url, auth=(context.hdi_user, context.hdi_pw))
+        resp = context.http_call('get', url, auth=get_auth(context))
         print(get_success_and_resp_str(context, resp, response_obj=TableResponse(
             batch_list_jobs_header_to_fn_dict))[1])
     except requests.ConnectionError:
-        print(
-        "Error connecting to {}. Please confirm SparkBatch app is healthy.".format(url))
+        print("Error connecting to {}. Please confirm SparkBatch app is healthy.".format(url))
 
 
 def batch_cancel_job(service_name, job_name, verb, context=cli_context):
@@ -150,7 +150,7 @@ def batch_cancel_job(service_name, job_name, verb, context=cli_context):
         print("Canceling job by posting to {}".format(url))
     try:
         resp = context.http_call('post', url,
-                                 auth=(context.hdi_user, context.hdi_pw))
+                                 auth=get_auth(context))
         print(
             get_success_and_resp_str(context, resp, response_obj=StaticStringResponse(
                 'Job {0} of service {1} canceled.'.format(job_name, service_name)),
@@ -175,7 +175,7 @@ def batch_service_delete(service_name, verb, context=cli_context):
     url = batch_get_url(context, BATCH_SINGLE_WS_FMT, service_name)
 
     try:
-        resp = context.http_call('get', url, auth=(context.hdi_user, context.hdi_pw))
+        resp = context.http_call('get', url, auth=get_auth(context))
     except requests.ConnectionError:
         print(
         "Error connecting to {}. Please confirm SparkBatch app is healthy.".format(url))
@@ -189,7 +189,7 @@ def batch_service_delete(service_name, verb, context=cli_context):
     if verb:
         print('Deleting resource at {}'.format(url))
     try:
-        resp = context.http_call('delete', url, auth=(context.hdi_user, context.hdi_pw))
+        resp = context.http_call('delete', url, auth=get_auth(context))
     except requests.ConnectionError:
         print(
         "Error connecting to {}. Please confirm SparkBatch app is healthy.".format(url))
@@ -273,7 +273,7 @@ def batch_service_run(service_name, verb, inputs,
         resp = context.http_call('put', url,
                                  headers=headers,
                                  data=json.dumps(arg_payload),
-                                 auth=(context.hdi_user, context.hdi_pw))
+                                 auth=get_auth(context))
     except requests.ConnectionError:
         print(
             "Error connecting to {}. Please confirm SparkBatch app is healthy.".format(
@@ -400,6 +400,9 @@ def batch_service_create(driver_file, service_name, title, verb, inputs,
                     print('Error creating parameter list: {}'.format(exc))
                     return
 
+    # Call ICE to create image -- Kubernetes only
+
+
     # update title
     json_payload['Title'] = title
 
@@ -417,13 +420,13 @@ def batch_service_create(driver_file, service_name, title, verb, inputs,
     try:
         resp = context.http_call('put', url, headers=headers,
                                  data=json.dumps(json_payload),
-                                 auth=(context.hdi_user, context.hdi_pw))
+                                 auth=get_auth(context))
     except requests.ConnectionError:
         print(
         "Error connecting to {}. Please confirm SparkBatch app is healthy.".format(url))
         return
 
-    # Create usage str: inputs/parameters before ouputs, optional after all
+    # Create usage str: inputs/parameters before outputs, optional after all
     param_str = ' '.join([batch_get_parameter_str(p) for
                           p in sorted(json_payload['Parameters'],
                                       key=lambda x: '_' if 'Value' in x
