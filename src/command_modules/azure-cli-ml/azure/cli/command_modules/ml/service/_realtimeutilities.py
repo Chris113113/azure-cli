@@ -11,34 +11,45 @@ Utilities to create and manage realtime web services.
 
 from __future__ import print_function
 
-from datetime import datetime, timedelta
 import os
 import tarfile
 import uuid
 import requests
+import tempfile
 
-from azure.storage.blob import (BlockBlobService, ContentSettings, BlobPermissions)
 from .._util import InvalidConfError
 from .._util import is_int
+from .._k8s_util import KubernetesOperations
+from kubernetes.client.rest import ApiException
+try:
+    # python 3
+    from urllib.parse import urlparse
+except ImportError:
+    # python 2
+    from urlparse import urlparse
 
 
 class RealtimeConstants(object):
     supported_runtimes = ['spark-py', 'cntk-py', 'tensorflow-py', 'scikit-py']
     ninja_runtimes = ['mrs']
-    supported_logging_levels = ['none', 'info', 'debug', 'warn', 'trace']
-    create_cmd_sample = "az ml service create realtime -f <webservice file> -n <service name> [-m <model1> [-m <model2>] ...] [-p requirements.txt] [-s <schema>] [-r {0}] [-l {1}]".format("|".join(supported_runtimes), "|".join(supported_logging_levels))  # pylint: disable=line-too-long
+    supported_logging_levels = ['info', 'debug', 'warn', 'trace']
+    create_cmd_sample = "aml service create realtime -f <webservice file> -n <service name> [-m <model1> [-m <model2>] ...] [-p requirements.txt] [-s <schema>] [-r {0}] [-l {1} [-z <replicas>]".format("|".join(supported_runtimes), "|".join(supported_logging_levels))  # pylint: disable=line-too-long
 
 
 def upload_dependency(context, dependency, verbose):
-    """Uploads the named dependency as an asset to the provided azure storage account.
-       If the dependency is a directory, it is zipped up before upload.
-
-       Return values:
-       -1,'': Error - path does not exist
-       0, 'blob': Success, dependency uploaded to blob.
-       1, 'blob': Success, dependency was a directory, uploaded to blob.
     """
 
+    :param context: CommandLineInterfaceContext object
+    :param dependency: path (local, http[s], or wasb[s]) to dependency
+    :param verbose: bool indicating verbosity
+    :return: (int, str, str): statuscode, uploaded_location, dependency_name
+    status codes:
+       -1: Error - path does not exist
+       0: Success, dependency was already remote or uploaded to blob.
+       1: Success, dependency was a directory, uploaded to blob.
+    """
+    if dependency.startswith('http') or dependency.startswith('wasb'):
+        return 0, dependency, urlparse(dependency).path.split('/')[-1]
     if not os.path.exists(dependency):
         if verbose:
             print('Error: no such path {}'.format(dependency))
@@ -54,7 +65,8 @@ def upload_dependency(context, dependency, verbose):
         if verbose:
             print('[Debug] name in archive: {}'.format(arcname))
         az_blob_name = str(uuid.uuid4()) + '.tar.gz'
-        tar_name = '/tmp/' + az_blob_name
+        tmpdir = tempfile.mkdtemp()
+        tar_name = os.path.join(tmpdir, az_blob_name)
         dependency_tar = tarfile.open(tar_name, 'w:gz')
         dependency_tar.add(dependency, arcname=arcname)
         dependency_tar.close()
@@ -168,3 +180,29 @@ def get_sample_data(sample_url, headers, verbose):
         return default_retval
 
     return str(sample_data)
+
+
+def get_k8s_frontend_url():
+    frontend_service_name = 'azureml-fe'
+    k8s_ops = KubernetesOperations()
+    try:
+        frontend_service = k8s_ops.get_service(frontend_service_name)
+        if frontend_service.status.load_balancer.ingress is None:
+            raise ApiException(status=404, reason="LoadBalancer has not finished being created for the Kubernetes Front-end. Please try again in a few minutes.")
+    except ApiException as exc:
+        print("Unable to load details for AzureML Kubernetes Front-End server. {}".format(exc))
+        raise
+
+    base_url = frontend_service.status.load_balancer.ingress[0].ip
+    port = frontend_service.spec.ports[0].port
+    frontend_url = "http://{}:{}/api/v1/service/".format(base_url, port)
+
+    return frontend_url
+
+
+def test_acs_k8s():
+    try:
+        get_k8s_frontend_url()
+        return True
+    except ApiException as exc:
+        return False
