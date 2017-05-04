@@ -814,3 +814,13 @@ def generate_ssh_keys():
         crypto_serialization.PublicFormat.OpenSSH
     )
     return private_key, public_key
+
+
+def to_pascal(obj):
+    """ Make dictionary lowercase """
+    if isinstance(obj, dict):
+        return {k[0].upper() + k[1:]: to_pascal(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [to_pascal(k) for k in obj]
+    return obj
+
