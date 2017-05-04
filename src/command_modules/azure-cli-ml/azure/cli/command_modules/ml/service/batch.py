@@ -346,8 +346,8 @@ def batch_service_create(driver_file, service_name, title, verb, inputs,
     outputs = [(arg, 'Output', 'Reference') for arg in outputs]
     parameters = [(arg, 'Input', 'Value') for arg in parameters]
 
-    # if not context.env_is_k8s and not batch_env_and_storage_are_valid(context):
-    #    return
+    if not context.env_is_k8s and not batch_env_and_storage_are_valid(context):
+        return
 
     if not title:
         title = service_name
