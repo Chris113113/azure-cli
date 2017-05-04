@@ -34,6 +34,8 @@ from azure.storage.blob import (BlockBlobService, ContentSettings, BlobPermissio
 from ._realtimeutilities import try_add_sample_file
 from datetime import datetime, timedelta
 from ._realtimeutilities import test_acs_k8s
+from .._k8s_util import KubernetesOperations
+from kubernetes.client.rest import ApiException
 
 # CONSTANTS
 BATCH_URL_BASE_FMT = '{}'
@@ -68,8 +70,11 @@ def batch_get_url(context, fmt, *args):
     :param args: list arguments to populate format string with
     :return:
     """
-    base = 'http://localhost:8080' if context.in_local_mode() else \
-        'https://{}-aml.apps.azurehdinsight.net'.format(context.hdi_domain)
+    base = 'http://localhost:8080'
+    if context.env_is_k8s:
+        base = 'http://{}'.format(batch_get_k8s_frontend_url())
+    else:
+        base = 'https://{}-aml.apps.azurehdinsight.net'.format(context.hdi_domain)
     return fmt.format(base).format(*args)
 
 
@@ -158,7 +163,7 @@ def batch_app_is_installed(context):
     """
     url = batch_get_url(context, BATCH_HEALTH_FMT)
     try:
-        resp = context.http_call('get', url, auth=(context.hdi_user, context.hdi_pw))
+        resp = context.http_call('get', url, auth=get_auth(context))
         return resp.status_code
     except requests.exceptions.ConnectionError:
         return None
@@ -172,7 +177,7 @@ def batch_get_acceptable_storage(context):
     url = batch_get_url(context, BATCH_DEPLOYMENT_INFO_FMT)
     try:
         success, content = get_success_and_resp_str(context, context.http_call('get', url,
-                                                                               auth=(context.hdi_user, context.hdi_pw)))
+                                                                               auth=get_auth(context)))
     except requests.ConnectionError:
         raise InvalidStorageException(
             "Error connecting to {}. Please confirm SparkBatch app is healthy.".format(
@@ -196,7 +201,7 @@ def batch_env_is_valid(context):
     """
     hdi_exists = False
     app_present = False
-    if not context.in_local_mode() and (not context.hdi_domain or not context.hdi_user or not context.hdi_pw):
+    if not context.in_local_mode() and not context.env_is_k8s and (not context.hdi_domain or not context.hdi_user or not context.hdi_pw):
         print("")
         print("Environment is missing the following variables:")
         if not context.hdi_domain:
@@ -292,7 +297,7 @@ def batch_get_job(context, job_name, service_name, verbose=False):
     if verbose:
         print("Getting resource at {}".format(url))
     try:
-        return context.http_call('get', url, auth=(context.hdi_user, context.hdi_pw))
+        return context.http_call('get', url, auth=get_auth(context))
     except requests.ConnectionError:
         print("Error connecting to {}. Please confirm SparkBatch app is healthy.".format(url))
         return
@@ -374,20 +379,16 @@ def get_auth(context):
     :param context:
     :return:
     """
-    return (context.hdi_user, context.hdi_pw)
+    if context.env_is_k8s:
+        # Currently we have no Authorization around Kubernetes services
+        return None
+    return context.hdi_user, context.hdi_pw
 
 
-def realtime_service_create(score_file, dependencies, requirements, schema_file, service_name,
-                            verb, custom_ice_url, logging_level, model, num_replicas, context):
+def create_batch_docker_image(score_file, dependencies, service_name, verb, context):
     """Create a new realtime web service."""
 
     verbose = verb
-    if logging_level == 'none':
-        app_insights_enabled = 'false'
-        logging_level = 'debug'
-    else:
-        app_insights_enabled = 'true'
-
     storage_exists = False
     acr_exists = False
 
@@ -434,35 +435,10 @@ def realtime_service_create(score_file, dependencies, requirements, schema_file,
 
     # Add dependencies
 
-    # If there's a model specified, add it as a dependency
-    if model:
-        dependencies.append(model)
-
     # Always inject azuremlutilities.py as a dependency from the CLI
     # It contains helper methods for serializing and deserializing schema
     utilities_filename = resource_filename(__name__, 'azuremlutilities.py')
     dependencies.append(utilities_filename)
-
-    # If a schema file was provided, try to find the accompanying sample file
-    # and add as a dependency
-    get_sample_code = ''
-    if schema_file is not '':
-        dependencies.append(schema_file)
-        sample_added, sample_filename = try_add_sample_file(dependencies, schema_file, verbose)
-        if sample_added:
-            get_sample_code = \
-                resource_string(__name__, 'data/getsample.py').decode('ascii').replace('PLACEHOLDER', sample_filename)
-
-    if requirements is not '':
-        if verbose:
-            print('Uploading requirements file: {}'.format(requirements))
-            (status, location, filename) = \
-                upload_dependency(context, requirements, verbose)
-            if status < 0:
-                print('Error resolving requirements file: no such file or directory {}'.format(requirements))
-                return
-            else:
-                json_payload['properties']['deploymentPackage']['pipRequirements'] = location
 
     dependency_injection_code = '\nimport tarfile\n'
     dependency_count = 0
@@ -510,10 +486,10 @@ def realtime_service_create(score_file, dependencies, requirements, schema_file,
 
     # wasb configuration: add the configured storage account in the as a wasb location
     wasb_config = "spark.sparkContext._jsc.hadoopConfiguration().set('fs.azure.account.key." + \
-                      context.az_account_name + ".blob.core.windows.net','" + context.az_account_key + "')"
+                   context.az_account_name + ".blob.core.windows.net','" + context.az_account_key + "')"
 
     # create blob with preamble code and user function definitions from cell
-    code = "{}\n{}\n{}\n{}\n\n\n{}".format(preamble, wasb_config, dependency_injection_code, code, get_sample_code)
+    code = "{}\n{}\n{}\n{}\n\n\n".format(preamble, wasb_config, dependency_injection_code, code)
 
     if verbose:
         print(code)
@@ -563,12 +539,7 @@ def realtime_service_create(score_file, dependencies, requirements, schema_file,
     # call ICE with payload to create docker image
 
     # Set base ICE URL
-    if custom_ice_url is not '':
-        base_ice_url = custom_ice_url
-        if base_ice_url.endswith('/'):
-            base_ice_url = base_ice_url[:-1]
-    else:
-        base_ice_url = 'https://amlacsagent.azureml-int.net'
+    base_ice_url = 'https://amlacsagent.azureml-int.net'
 
     create_url = base_ice_url + '/images/' + service_name
     get_url = base_ice_url + '/jobs'
@@ -636,6 +607,23 @@ def realtime_service_create(score_file, dependencies, requirements, schema_file,
                 return
 
     print('done.')
-    print('Image available at : {}'.format(acs_payload['container']['docker']['image']))
-    return acs_payload['container']['docker']['image']
+    print('Image available at : {}'.format(image))
+    return image
 
+def batch_get_k8s_frontend_url():
+    frontend_service_name = 'sparkbatch'
+    k8s_ops = KubernetesOperations()
+    try:
+        frontend_service = k8s_ops.get_service(frontend_service_name)
+        if frontend_service.status.load_balancer.ingress is None:
+            raise ApiException(status=404, reason="LoadBalancer has not finished being created for the Kubernetes Front-end. Please try again in a few minutes.")
+    except ApiException as exc:
+        print("Unable to load details for AzureML Kubernetes Front-End server. {}".format(exc))
+        raise
+
+    base_url = frontend_service.status.load_balancer.ingress[0].ip
+    port = frontend_service.spec.ports[0].port
+
+    frontend_url = '{}:{}'.format(base_url, port)
+
+    return frontend_url

@@ -23,6 +23,7 @@ from ._batchutilities import batch_list_jobs_header_to_fn_dict
 from ._batchutilities import batch_list_service_header_to_fn_dict
 from ._batchutilities import batch_view_service_header_to_fn_dict
 from ._batchutilities import batch_view_service_usage_header_to_fn_dict
+from ._batchutilities import create_batch_docker_image
 from ._batchutilities import get_success_and_resp_str
 from ._batchutilities import get_auth
 from ._batchutilities import validate_and_split_run_param
@@ -33,6 +34,7 @@ from .._util import TableResponse
 from .._util import cli_context
 from .._util import get_json
 from .._util import update_asset_path
+from .._util import to_pascal
 
 
 def batch_service_list(context=cli_context):
@@ -344,8 +346,8 @@ def batch_service_create(driver_file, service_name, title, verb, inputs,
     outputs = [(arg, 'Output', 'Reference') for arg in outputs]
     parameters = [(arg, 'Input', 'Value') for arg in parameters]
 
-    if not batch_env_and_storage_are_valid(context):
-        return
+    # if not context.env_is_k8s and not batch_env_and_storage_are_valid(context):
+    #    return
 
     if not title:
         title = service_name
@@ -401,7 +403,10 @@ def batch_service_create(driver_file, service_name, title, verb, inputs,
                     return
 
     # Call ICE to create image -- Kubernetes only
-
+    if context.env_is_k8s:
+        docker_url = create_batch_docker_image(driver_file, dependencies, context=context, service_name=service_name,
+                                               verb=verb)
+        json_payload['DockerImageUri'] = docker_url
 
     # update title
     json_payload['Title'] = title
@@ -421,9 +426,11 @@ def batch_service_create(driver_file, service_name, title, verb, inputs,
         resp = context.http_call('put', url, headers=headers,
                                  data=json.dumps(json_payload),
                                  auth=get_auth(context))
+        # Force response into PascalCase
+        resp = to_pascal(resp)
+
     except requests.ConnectionError:
-        print(
-        "Error connecting to {}. Please confirm SparkBatch app is healthy.".format(url))
+        print("Error connecting to {}. Please confirm SparkBatch app is healthy.".format(url))
         return
 
     # Create usage str: inputs/parameters before outputs, optional after all
