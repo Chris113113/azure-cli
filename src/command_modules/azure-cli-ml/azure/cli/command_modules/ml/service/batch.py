@@ -77,10 +77,10 @@ def batch_service_view(service_name, verb, context=cli_context):
                                                              batch_view_service_header_to_fn_dict,
                                                              batch_view_service_usage_header_to_fn_dict]),
                                                      verbose=verb)
-        print(response)
         if success:
+            resp_json = to_pascal(resp.json())
             param_str = ' '.join([batch_get_parameter_str(p) for
-                                  p in sorted(resp.json()['Parameters'],
+                                  p in sorted(resp_json['Parameters'],
                                               key=lambda x: '_' if 'Value' in x
                                               else x['Direction'])])
             usage = 'Usage: az ml service run batch -n {} {} [-w] [-j <job_id>] [-v]'.format(
@@ -218,7 +218,7 @@ def batch_service_run(service_name, verb, inputs,
     :return: None
     """
     if not job_name:
-        job_name = time.strftime('%Y-%m-%d_%H%M%S')
+        job_name = time.strftime('%Y%m%d%H%M%S')
 
     input_output_dict = {}
     parameter_dict = {}
@@ -265,7 +265,8 @@ def batch_service_run(service_name, verb, inputs,
     if verb:
         print('parameters: {0}'.format(parameter_dict))
 
-    arg_payload = {'Parameters': parameter_dict}
+    param_key = 'parameters' if context.env_is_k8s else 'Parameters'
+    arg_payload = {param_key: parameter_dict}
 
     url = batch_get_url(context, BATCH_SINGLE_JOB_FMT, service_name, job_name)
     if verb:
@@ -404,7 +405,7 @@ def batch_service_create(driver_file, service_name, title, verb, inputs,
 
     # Call ICE to create image -- Kubernetes only
     if context.env_is_k8s:
-        docker_url = create_batch_docker_image(driver_file, dependencies, context=context, service_name=service_name,
+        docker_url = create_batch_docker_image(driver_file, [], context=context, service_name=service_name,
                                                verb=verb)
         json_payload['DockerImageUri'] = docker_url
 
@@ -426,8 +427,6 @@ def batch_service_create(driver_file, service_name, title, verb, inputs,
         resp = context.http_call('put', url, headers=headers,
                                  data=json.dumps(json_payload),
                                  auth=get_auth(context))
-        # Force response into PascalCase
-        resp = to_pascal(resp)
 
     except requests.ConnectionError:
         print("Error connecting to {}. Please confirm SparkBatch app is healthy.".format(url))

@@ -48,6 +48,8 @@ def upload_dependency(context, dependency, verbose):
        0: Success, dependency was already remote or uploaded to blob.
        1: Success, dependency was a directory, uploaded to blob.
     """
+    if verbose:
+        print('Dependency: {}'.format(dependency))
     if dependency.startswith('http') or dependency.startswith('wasb'):
         return 0, dependency, urlparse(dependency).path.split('/')[-1]
     if not os.path.exists(dependency):

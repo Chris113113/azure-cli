@@ -385,7 +385,8 @@ def get_success_and_resp_str(context, http_response, response_obj=None, verbose=
         print(http_response.content)
     if http_response.status_code == 200:
         try:
-            json_obj = get_json(http_response.content)
+            # Force object to PascalCase
+            json_obj = to_pascal(get_json(http_response.content))
             if response_obj is not None:
                 return True, response_obj.format_successful_response(context, json_obj)
             return True, json.dumps(json_obj, indent=4, sort_keys=True)
@@ -556,7 +557,7 @@ def traverse_json(json_obj, traversal_tuple):
     :param traversal_tuple: tuple of keys to traverse the json dict
     :return: string value to display
     """
-    trav = json_obj
+    trav = to_pascal(json_obj)
     for key in traversal_tuple:
         trav = trav[key]
     return trav
@@ -822,10 +823,9 @@ def generate_ssh_keys():
 
 
 def to_pascal(obj):
-    """ Make dictionary lowercase """
+    """ Make dictionary begin with uppercase """
     if isinstance(obj, dict):
         return {k[0].upper() + k[1:]: to_pascal(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [to_pascal(k) for k in obj]
     return obj
-

@@ -118,7 +118,10 @@ def batch_get_job_description(context, http_content):
                       'yarnui/hn/cluster/app/{}\n'.format(context.hdi_domain, json_obj['YarnAppId'])
     elif 'DriverLogFile' in json_obj:
         return_str += 'Logs available at: {}\n'.format(json_obj['DriverLogFile'])
-    return_str += 'State: {}'.format(json_obj['State'])
+    if context.env_is_k8s:
+        return_str += 'State: {}'.format(json_obj['JobState'])
+    else:
+        return_str += 'State: {}'.format(json_obj['State'])
     return return_str
 
 
@@ -445,6 +448,8 @@ def create_batch_docker_image(score_file, dependencies, service_name, verb, cont
     if dependencies is not None:
         print('Uploading dependencies.')
         for dependency in dependencies:
+            if isinstance(dependency, tuple):
+                dependency = dependency[0]
             (status, location, filename) = \
                 upload_dependency(context, dependency, verbose)
             if status < 0:
